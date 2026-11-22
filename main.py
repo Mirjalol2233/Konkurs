@@ -27,8 +27,7 @@ PORT = int(os.getenv("PORT", "10000"))
 # Yopiq kanal:  ("Nomi", -1001234567890, "https://t.me/+AbCdEf...")
 # Bot har bir kanalda ADMIN bo'lishi shart
 CHANNELS = [
-    ("📢 Abdurahmon Sharipov | Shunchaki sahifa", "@kanal1_username", "https://t.me/kanal1_username"),
-    ("📢 Multilevel Marathon", -1001234567890, "https://t.me/+yopiq_havola"),
+    ("📢 Shaxsiy kanal", "@kanal_username", "https://t.me/kanal_username"),
 ]
 
 ABOUT_TEXT = (
