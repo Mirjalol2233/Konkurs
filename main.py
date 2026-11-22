@@ -22,10 +22,13 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")  # PostgreSQL (Neon/Supabase/Render)
 PORT = int(os.getenv("PORT", "10000"))
 
-# Majburiy kanallar: (nomi, @username)  -- bot har bir kanalda ADMIN bo'lishi shart
+# Majburiy kanallar: (tugma nomi, kanal ID yoki @username, havola)
+# Ochiq kanal:  ("Nomi", "@username", "https://t.me/username")
+# Yopiq kanal:  ("Nomi", -1001234567890, "https://t.me/+AbCdEf...")
+# Bot har bir kanalda ADMIN bo'lishi shart
 CHANNELS = [
-    ("📢 Abdurahmon Sharipov | Shunchaki sahifa", "@kanal1_username"),
-    ("📢 Multilevel Marathon", "@kanal2_username"),
+    ("📢 Abdurahmon Sharipov | Shunchaki sahifa", "@kanal1_username", "https://t.me/kanal1_username"),
+    ("📢 Multilevel Marathon", -1001234567890, "https://t.me/+yopiq_havola"),
 ]
 
 ABOUT_TEXT = (
@@ -82,8 +85,8 @@ main_menu = ReplyKeyboardMarkup(
 
 def channels_kb() -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text=name, url=f"https://t.me/{user.lstrip('@')}")]
-        for name, user in CHANNELS
+        [InlineKeyboardButton(text=name, url=link)]
+        for name, _, link in CHANNELS
     ]
     rows.append(
         [InlineKeyboardButton(text="✅ Obunani tekshirish", callback_data="check_sub")]
@@ -183,7 +186,7 @@ async def my_place(user_id: int):
 
 # ================== OBUNA TEKSHIRISH ==================
 async def is_subscribed(bot: Bot, user_id: int) -> bool:
-    for _, channel in CHANNELS:
+    for _, channel, _ in CHANNELS:
         try:
             m = await bot.get_chat_member(channel, user_id)
             if m.status in ("left", "kicked"):
