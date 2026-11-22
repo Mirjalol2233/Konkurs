@@ -22,12 +22,19 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_PATH = os.getenv("DB_PATH", "bot.db")
 PORT = int(os.getenv("PORT", "10000"))
 
-# Majburiy kanallar: (tugma nomi, kanal ID yoki @username, havola)
-# Ochiq kanal:  ("Nomi", "@username", "https://t.me/username")
-# Yopiq kanal:  ("Nomi", -1001234567890, "https://t.me/+AbCdEf...")
-# Bot har bir kanalda ADMIN bo'lishi shart
+# Majburiy kanal Render Environment'dan olinadi:
+#   CHANNEL_ID   -> kanal ID (-100...) yoki @username
+#   CHANNEL_LINK -> tugma ochadigan havola
+#   CHANNEL_NAME -> tugma yozuvi (ixtiyoriy)
+# Bot kanalda ADMIN bo'lishi shart
+_cid = os.getenv("CHANNEL_ID", "").strip()
+CHANNEL_ID = int(_cid) if _cid.lstrip("-").isdigit() else _cid
 CHANNELS = [
-    ("📢 Shaxsiy kanal", "@kanal_username", "https://t.me/kanal_username"),
+    (
+        os.getenv("CHANNEL_NAME", "📢 Shaxsiy kanal"),
+        CHANNEL_ID,
+        os.getenv("CHANNEL_LINK", "").strip(),
+    ),
 ]
 
 ABOUT_TEXT = (
@@ -246,6 +253,14 @@ async def guard(message: Message, bot: Bot) -> bool:
         await message.answer(CHANNELS_TEXT, reply_markup=channels_kb())
         return False
     return True
+
+
+@router.message(F.forward_origin)
+async def get_channel_id(message: Message):
+    """Kanaldan post forward qilinsa, kanal ID'sini qaytaradi."""
+    chat = getattr(message.forward_origin, "chat", None)
+    if chat:
+        await message.answer(f"Kanal ID: <code>{chat.id}</code>")
 
 
 @router.message(F.text == BTN_LINK)
