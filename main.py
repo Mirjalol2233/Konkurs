@@ -1,6 +1,8 @@
 import asyncio
+import html
 import logging
 import os
+from urllib.parse import quote
 
 import aiosqlite
 from aiohttp import web
@@ -49,27 +51,63 @@ ABOUT_TEXT = (
     "«Start»ni bosing va boshlang!"
 )
 
+# ---------- Premium emoji yordamchilari ----------
+# Render Environment'da EM_<NOM> = premium emoji ID berilsa, premium emoji
+# ishlatiladi. Berilmasa oddiy emoji ko'rinadi (xato bermaydi).
+# Premium emoji faqat bot egasida Telegram Premium bo'lsa ishlaydi.
+def E(fallback: str, name: str) -> str:
+    cid = os.getenv(f"EM_{name}", "").strip()
+    if cid:
+        return f'<tg-emoji emoji-id="{cid}">{fallback}</tg-emoji>'
+    return fallback
+
+
+def ibtn(label, fallback, name=None, style=None, **kw) -> InlineKeyboardButton:
+    """Tugma: premium ikonka (bo'lsa) + rang (primary/success/danger)."""
+    extra = {}
+    cid = os.getenv(f"EM_{name}", "").strip() if name else ""
+    if cid:
+        extra["icon_custom_emoji_id"] = cid
+        text = label
+    else:
+        text = f"{fallback} {label}".strip()
+    if style:
+        extra["style"] = style
+    return InlineKeyboardButton(text=text, **kw, **extra)
+
+
+EFFECT_PARTY = "5046509860389126442"  # 🎉 xabar effekti
+
 CHANNELS_TEXT = (
-    "📢 <b>Majburiy kanallar</b>\n\n"
-    "🎁 Sovg'alarga ega bo'lish uchun quyidagi barcha kanallarga "
+    f"{E('📢', 'MEGAPHONE')} <b>Majburiy kanallar</b>\n\n"
+    f"{E('🎁', 'GIFT')} Sovg'alarga ega bo'lish uchun quyidagi barcha kanallarga "
     "a'zo bo'lishingiz shart.\n\n"
-    "Kanallarga a'zo bo'lganingizdan so'ng, ✅ <b>Obuna bo'ldim</b> "
-    "tugmasini bosing."
+    "<blockquote>Kanallarga a'zo bo'lganingizdan so'ng, "
+    f"{E('✅', 'CHECK')} <b>Obuna bo'ldim</b> tugmasini bosing.</blockquote>"
 )
 
 GIFTS_TEXT = (
-    "🎁 <b>Sovg'alar</b>\n\n"
+    f"{E('🎁', 'GIFT')} <b>Sovg'alar</b>\n\n"
+    "<blockquote>"
     "🥇 1-o'rin — ...\n"
     "🥈 2-o'rin — ...\n"
-    "🥉 3-o'rin — ...\n"
+    "🥉 3-o'rin — ..."
+    "</blockquote>"
 )
 
 RULES_TEXT = (
-    "💡 <b>Konkurs shartlari</b>\n\n"
+    f"{E('💡', 'BULB')} <b>Konkurs shartlari</b>\n\n"
+    "<blockquote>"
     "1. Barcha majburiy kanallarga a'zo bo'ling.\n"
     "2. Shaxsiy havolangizni do'stlaringizga yuboring.\n"
     "3. Do'stingiz havola orqali kirib, kanallarga a'zo bo'lsa — sizga +1 ball.\n"
-    "4. Eng ko'p ball to'plaganlar g'olib bo'ladi.\n"
+    "4. Eng ko'p ball to'plaganlar g'olib bo'ladi."
+    "</blockquote>"
+)
+
+SHARE_TEXT = (
+    "📚 Kitobxon konkursida qatnashing! "
+    "Do'stlaringizni yig'ing va eng zo'r kitoblarga ega bo'ling!"
 )
 
 # ================== TUGMALAR ==================
@@ -91,13 +129,23 @@ main_menu = ReplyKeyboardMarkup(
 
 def channels_kb() -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text=name, url=link)]
+        [InlineKeyboardButton(text=name, url=link, style="primary")]
         for name, _, link in CHANNELS
     ]
     rows.append(
-        [InlineKeyboardButton(text="✅ Obuna bo'ldim", callback_data="check_sub")]
+        [ibtn("Obuna bo'ldim", "✅", "CHECK", "success", callback_data="check_sub")]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def share_kb(link: str) -> InlineKeyboardMarkup:
+    share = f"https://t.me/share/url?url={quote(link, safe='')}&text={quote(SHARE_TEXT)}"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [ibtn("Referal havolani ulashish", "🔗", "LINK", "primary", url=share)],
+            [ibtn("Referallarimni ko'rish", "👥", "USERS", callback_data="my_refs")],
+        ]
+    )
 
 
 # ================== BAZA (SQLite) ==================
@@ -153,6 +201,15 @@ async def count_refs(user_id: int) -> int:
         "SELECT COUNT(*) FROM users WHERE referrer_id=? AND verified=1", (user_id,)
     )
     return (await cur.fetchone())[0]
+
+
+async def refs_list(user_id: int, limit: int = 20):
+    cur = await db.execute(
+        "SELECT full_name FROM users WHERE referrer_id=? AND verified=1 "
+        "ORDER BY created_at DESC LIMIT ?",
+        (user_id, limit),
+    )
+    return await cur.fetchall()
 
 
 async def top_users(limit: int = 10):
@@ -217,7 +274,7 @@ async def start(message: Message, command: CommandObject, bot: Bot):
 
     user = await get_user(u.id)
     if user["verified"] and await is_subscribed(bot, u.id):
-        await message.answer("✅ Asosiy menyu:", reply_markup=main_menu)
+        await message.answer(f"{E('✅', 'CHECK')} <b>Asosiy menyu</b>", reply_markup=main_menu)
     else:
         await message.answer(CHANNELS_TEXT, reply_markup=channels_kb())
 
@@ -230,7 +287,17 @@ async def check_sub(call: CallbackQuery, bot: Bot):
 
     first_time = await mark_verified(call.from_user.id)
     await call.message.delete()
-    await call.message.answer("✅ Obuna tasdiqlandi!", reply_markup=main_menu)
+    sticker = os.getenv("WELCOME_STICKER", "").strip()
+    if sticker:
+        try:
+            await call.message.answer_sticker(sticker)
+        except Exception as e:
+            logging.warning("Stiker yuborilmadi: %s", e)
+    text = f"{E('✅', 'CHECK')} <b>Obuna tasdiqlandi!</b>\n\n<blockquote>Endi referal havolangizni oling va do'stlaringizni taklif qiling.</blockquote>"
+    try:
+        await call.message.answer(text, reply_markup=main_menu, message_effect_id=EFFECT_PARTY)
+    except Exception:
+        await call.message.answer(text, reply_markup=main_menu)
 
     if first_time:
         user = await get_user(call.from_user.id)
@@ -239,8 +306,8 @@ async def check_sub(call: CallbackQuery, bot: Bot):
                 total = await count_refs(user["referrer_id"])
                 await bot.send_message(
                     user["referrer_id"],
-                    f"🎉 Sizning havolangiz orqali yangi do'st qo'shildi!\n"
-                    f"👥 Jami takliflaringiz: <b>{total}</b>",
+                    f"{E('🎉', 'PARTY')} <b>Sizning havolangiz orqali yangi do'st qo'shildi!</b>\n"
+                    f"{E('👥', 'USERS')} Jami takliflaringiz: <b>{total}</b>",
                 )
             except Exception:
                 pass
@@ -263,6 +330,23 @@ async def get_channel_id(message: Message):
         await message.answer(f"Kanal ID: <code>{chat.id}</code>")
 
 
+@router.message(F.entities.func(lambda e: bool(e) and any(x.type == "custom_emoji" for x in e)))
+async def get_emoji_ids(message: Message):
+    """Premium emoji yuborilsa, uning ID'sini qaytaradi."""
+    ids = [x.custom_emoji_id for x in message.entities if x.type == "custom_emoji"]
+    await message.answer("Premium emoji ID:\n" + "\n".join(f"<code>{i}</code>" for i in ids))
+
+
+@router.message(F.sticker)
+async def get_sticker_id(message: Message):
+    """Stiker yuborilsa, uning file_id'sini qaytaradi."""
+    st = message.sticker
+    text = f"Stiker file_id:\n<code>{st.file_id}</code>"
+    if st.custom_emoji_id:
+        text += f"\n\nEmoji ID:\n<code>{st.custom_emoji_id}</code>"
+    await message.answer(text)
+
+
 @router.message(F.text == BTN_LINK)
 async def my_link(message: Message, bot: Bot):
     if not await guard(message, bot):
@@ -270,10 +354,36 @@ async def my_link(message: Message, bot: Bot):
     me = await bot.get_me()
     link = f"https://t.me/{me.username}?start=ref_{message.from_user.id}"
     await message.answer(
-        "🔗 <b>Sizning shaxsiy havolangiz:</b>\n\n"
+        f"{E('🔗', 'LINK')} <b>Sizning shaxsiy referal havolangiz</b>\n\n"
         f"{link}\n\n"
-        "Do'stlaringizga yuboring. Har bir a'zo bo'lgan do'st uchun +1 ball!"
+        "<blockquote>Havolani do'stlaringiz bilan ulashing. Referal ular barcha "
+        "majburiy kanallarga a'zo bo'lgandan keyingina hisoblanadi.</blockquote>",
+        reply_markup=share_kb(link),
     )
+
+
+@router.callback_query(F.data == "my_refs")
+async def my_refs(call: CallbackQuery, bot: Bot):
+    if not await is_subscribed(bot, call.from_user.id):
+        await call.answer("❌ Avval kanalga a'zo bo'ling!", show_alert=True)
+        return
+    uid = call.from_user.id
+    total = await count_refs(uid)
+    rows = await refs_list(uid, 20)
+    if not rows:
+        body = "Hozircha hech kim qo'shilmagan.\nHavolangizni do'stlaringizga yuboring!"
+    else:
+        body = "\n".join(
+            f"{i}. {html.escape(r['full_name'] or 'Foydalanuvchi')}"
+            for i, r in enumerate(rows, 1)
+        )
+        if total > len(rows):
+            body += f"\n... va yana {total - len(rows)} ta"
+    await call.message.answer(
+        f"{E('👥', 'USERS')} <b>Mening referallarim: {total} ta</b>\n\n"
+        f"<blockquote expandable>{body}</blockquote>"
+    )
+    await call.answer()
 
 
 @router.message(F.text == BTN_ACCOUNT)
@@ -284,11 +394,13 @@ async def my_account(message: Message, bot: Bot):
     cnt = await count_refs(uid)
     place = await my_place(uid)
     await message.answer(
-        "📄 <b>Mening hisobim</b>\n\n"
-        f"👤 {message.from_user.full_name}\n"
-        f"👥 Taklif qilganlar: <b>{cnt}</b>\n"
-        f"⭐️ Ballar: <b>{cnt}</b>\n"
-        f"🏆 O'rningiz: <b>{place if place else '—'}</b>"
+        f"{E('📄', 'DOC')} <b>Mening hisobim</b>\n\n"
+        "<blockquote>"
+        f"👤 {html.escape(message.from_user.full_name)}\n"
+        f"{E('👥', 'USERS')} Taklif qilganlar: <b>{cnt}</b>\n"
+        f"{E('⭐️', 'STAR')} Ballar: <b>{cnt}</b>\n"
+        f"{E('🏆', 'TROPHY')} O'rningiz: <b>{place if place else '—'}</b>"
+        "</blockquote>"
     )
 
 
@@ -313,11 +425,15 @@ async def rating(message: Message, bot: Bot):
         await message.answer("📊 Reyting hozircha bo'sh.")
         return
     medals = ["🥇", "🥈", "🥉"]
-    lines = ["📊 <b>TOP-10 reyting</b>\n"]
+    lines = []
     for i, r in enumerate(rows):
         mark = medals[i] if i < 3 else f"{i + 1}."
-        lines.append(f"{mark} {r['full_name']} — <b>{r['cnt']}</b>")
-    await message.answer("\n".join(lines))
+        name = html.escape(r["full_name"] or "Foydalanuvchi")
+        lines.append(f"{mark} {name} — <b>{r['cnt']}</b>")
+    await message.answer(
+        f"{E('📊', 'CHART')} <b>TOP-10 reyting</b>\n\n"
+        "<blockquote>" + "\n".join(lines) + "</blockquote>"
+    )
 
 
 # ================== RENDER UCHUN WEB SERVER ==================
