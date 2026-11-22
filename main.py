@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 
-import asyncpg
+import aiosqlite
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
@@ -19,7 +19,7 @@ from aiogram.types import (
 
 # ================== SOZLAMALAR (Render Environment'da beriladi) ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")  # PostgreSQL (Neon/Supabase/Render)
+DB_PATH = os.getenv("DB_PATH", "bot.db")
 PORT = int(os.getenv("PORT", "10000"))
 
 # Majburiy kanallar: (tugma nomi, kanal ID yoki @username, havola)
@@ -94,94 +94,90 @@ def channels_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# ================== BAZA ==================
-pool: asyncpg.Pool = None
+# ================== BAZA (SQLite) ==================
+db: aiosqlite.Connection = None
 
 
 async def init_db():
-    global pool
-    pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
-    async with pool.acquire() as c:
-        await c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                user_id     BIGINT PRIMARY KEY,
-                full_name   TEXT,
-                username    TEXT,
-                referrer_id BIGINT,
-                verified    BOOLEAN DEFAULT FALSE,
-                created_at  TIMESTAMPTZ DEFAULT NOW()
-            )
-            """
+    global db
+    db = await aiosqlite.connect(DB_PATH)
+    db.row_factory = aiosqlite.Row
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            user_id     INTEGER PRIMARY KEY,
+            full_name   TEXT,
+            username    TEXT,
+            referrer_id INTEGER,
+            verified    INTEGER DEFAULT 0,
+            created_at  TEXT DEFAULT CURRENT_TIMESTAMP
         )
+        """
+    )
+    await db.commit()
 
 
 async def add_user(user_id: int, full_name: str, username: str, referrer_id):
-    async with pool.acquire() as c:
-        # faqat yangi foydalanuvchiga referrer yoziladi, o'zini o'zi taklif qila olmaydi
-        if referrer_id == user_id:
-            referrer_id = None
-        await c.execute(
-            """
-            INSERT INTO users (user_id, full_name, username, referrer_id)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (user_id) DO NOTHING
-            """,
-            user_id, full_name, username, referrer_id,
-        )
+    if referrer_id == user_id:
+        referrer_id = None
+    await db.execute(
+        "INSERT OR IGNORE INTO users (user_id, full_name, username, referrer_id) "
+        "VALUES (?, ?, ?, ?)",
+        (user_id, full_name, username, referrer_id),
+    )
+    await db.commit()
 
 
 async def get_user(user_id: int):
-    async with pool.acquire() as c:
-        return await c.fetchrow("SELECT * FROM users WHERE user_id=$1", user_id)
+    cur = await db.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+    return await cur.fetchone()
 
 
 async def mark_verified(user_id: int) -> bool:
     """True qaytadi, agar birinchi marta tasdiqlangan bo'lsa."""
-    async with pool.acquire() as c:
-        res = await c.execute(
-            "UPDATE users SET verified=TRUE WHERE user_id=$1 AND verified=FALSE",
-            user_id,
-        )
-        return res.endswith("1")
+    cur = await db.execute(
+        "UPDATE users SET verified=1 WHERE user_id=? AND verified=0", (user_id,)
+    )
+    await db.commit()
+    return cur.rowcount == 1
 
 
 async def count_refs(user_id: int) -> int:
-    async with pool.acquire() as c:
-        return await c.fetchval(
-            "SELECT COUNT(*) FROM users WHERE referrer_id=$1 AND verified=TRUE",
-            user_id,
-        )
+    cur = await db.execute(
+        "SELECT COUNT(*) FROM users WHERE referrer_id=? AND verified=1", (user_id,)
+    )
+    return (await cur.fetchone())[0]
 
 
 async def top_users(limit: int = 10):
-    async with pool.acquire() as c:
-        return await c.fetch(
-            """
-            SELECT u.user_id, u.full_name, COUNT(r.user_id) AS cnt
-            FROM users u
-            JOIN users r ON r.referrer_id = u.user_id AND r.verified = TRUE
-            GROUP BY u.user_id, u.full_name
-            ORDER BY cnt DESC
-            LIMIT $1
-            """,
-            limit,
-        )
+    cur = await db.execute(
+        """
+        SELECT u.user_id, u.full_name, COUNT(r.user_id) AS cnt
+        FROM users u
+        JOIN users r ON r.referrer_id = u.user_id AND r.verified = 1
+        GROUP BY u.user_id, u.full_name
+        ORDER BY cnt DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    return await cur.fetchall()
 
 
 async def my_place(user_id: int):
-    async with pool.acquire() as c:
-        return await c.fetchval(
-            """
-            SELECT place FROM (
-                SELECT referrer_id, RANK() OVER (ORDER BY COUNT(*) DESC) AS place
-                FROM users
-                WHERE referrer_id IS NOT NULL AND verified = TRUE
-                GROUP BY referrer_id
-            ) t WHERE referrer_id = $1
-            """,
-            user_id,
-        )
+    cur = await db.execute(
+        """
+        SELECT place FROM (
+            SELECT referrer_id, RANK() OVER (ORDER BY COUNT(*) DESC) AS place
+            FROM users
+            WHERE referrer_id IS NOT NULL AND verified = 1
+            GROUP BY referrer_id
+        ) t WHERE referrer_id = ?
+        """,
+        (user_id,),
+    )
+    row = await cur.fetchone()
+    return row[0] if row else None
 
 
 # ================== OBUNA TEKSHIRISH ==================
