@@ -47,7 +47,7 @@ CHANNELS_TEXT = (
     "📢 <b>Majburiy kanallar</b>\n\n"
     "🎁 Sovg'alarga ega bo'lish uchun quyidagi barcha kanallarga "
     "a'zo bo'lishingiz shart.\n\n"
-    "Kanallarga a'zo bo'lganingizdan so'ng, ✅ <b>Obunani tekshirish</b> "
+    "Kanallarga a'zo bo'lganingizdan so'ng, ✅ <b>Obuna bo'ldim</b> "
     "tugmasini bosing."
 )
 
@@ -89,7 +89,7 @@ def channels_kb() -> InlineKeyboardMarkup:
         for name, _, link in CHANNELS
     ]
     rows.append(
-        [InlineKeyboardButton(text="✅ Obunani tekshirish", callback_data="check_sub")]
+        [InlineKeyboardButton(text="✅ Obuna bo'ldim", callback_data="check_sub")]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -209,7 +209,6 @@ async def start(message: Message, command: CommandObject, bot: Bot):
     u = message.from_user
     await add_user(u.id, u.full_name, u.username, ref)
 
-    await message.answer(ABOUT_TEXT)
     user = await get_user(u.id)
     if user["verified"] and await is_subscribed(bot, u.id):
         await message.answer("✅ Asosiy menyu:", reply_markup=main_menu)
