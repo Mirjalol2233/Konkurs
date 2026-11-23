@@ -9,7 +9,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart, CommandObject
+from aiogram.filters import Command, CommandStart, CommandObject
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -23,6 +23,7 @@ from aiogram.types import (
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_PATH = os.getenv("DB_PATH", "bot.db")
 PORT = int(os.getenv("PORT", "10000"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or 0)  # bot egasining Telegram ID
 
 # Majburiy kanal Render Environment'dan olinadi:
 #   CHANNEL_ID   -> kanal ID (-100...) yoki @username
@@ -167,6 +168,24 @@ async def init_db():
             created_at  TEXT DEFAULT CURRENT_TIMESTAMP
         )
         """
+    )
+    await db.execute(
+        "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)"
+    )
+    await db.commit()
+
+
+async def get_setting(key: str, default: str) -> str:
+    cur = await db.execute("SELECT value FROM settings WHERE key=?", (key,))
+    row = await cur.fetchone()
+    return row[0] if row else default
+
+
+async def set_setting(key: str, value: str):
+    await db.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
     )
     await db.commit()
 
@@ -322,6 +341,40 @@ async def guard(message: Message, bot: Bot) -> bool:
     return True
 
 
+# ---------- ADMIN: matnlarni bot ichidan o'zgartirish ----------
+async def _save_text(message: Message, key: str, title: str):
+    if not ADMIN_ID or message.from_user.id != ADMIN_ID:
+        return
+    src = message.reply_to_message
+    if not src or not src.text:
+        await message.answer(
+            f"{title} matnini yangi xabar qilib yuboring, so'ng shu xabarga "
+            f"<b>javob (reply)</b> qilib {message.text.split()[0]} deb yozing."
+        )
+        return
+    await set_setting(key, src.html_text)
+    await message.answer(f"✅ {title} yangilandi. Ko'rish uchun menyudan tekshiring.")
+
+
+@router.message(Command("setrules"))
+async def set_rules(message: Message):
+    await _save_text(message, "rules", "Shartlar")
+
+
+@router.message(Command("setgifts"))
+async def set_gifts(message: Message):
+    await _save_text(message, "gifts", "Sovg'alar")
+
+
+@router.message(Command("resettexts"))
+async def reset_texts(message: Message):
+    if not ADMIN_ID or message.from_user.id != ADMIN_ID:
+        return
+    await db.execute("DELETE FROM settings WHERE key IN ('rules','gifts')")
+    await db.commit()
+    await message.answer("♻️ Shartlar va sovg'alar matni kodga yozilgan holatga qaytdi.")
+
+
 @router.message(F.forward_origin)
 async def get_channel_id(message: Message):
     """Kanaldan post forward qilinsa, kanal ID'sini qaytaradi."""
@@ -407,13 +460,13 @@ async def my_account(message: Message, bot: Bot):
 @router.message(F.text == BTN_GIFTS)
 async def gifts(message: Message, bot: Bot):
     if await guard(message, bot):
-        await message.answer(GIFTS_TEXT)
+        await message.answer(await get_setting("gifts", GIFTS_TEXT))
 
 
 @router.message(F.text == BTN_RULES)
 async def rules(message: Message, bot: Bot):
     if await guard(message, bot):
-        await message.answer(RULES_TEXT)
+        await message.answer(await get_setting("rules", RULES_TEXT))
 
 
 @router.message(F.text == BTN_RATING)
